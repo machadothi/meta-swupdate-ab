@@ -1,0 +1,98 @@
+# SWUpdate build configuration (Kconfig)
+# This file controls which features are compiled into the swupdate binary.
+# After running init-layer.sh, this file is copied to:
+#   recipes-support/swupdate/swupdate/defconfig
+#
+# Most projects can use this file as-is. See the SWUpdate documentation at
+# https://sbabic.github.io/swupdate/ for a full list of options.
+
+# ---------------------------------------------------------------------------
+# Core
+# ---------------------------------------------------------------------------
+CONFIG_HAVE_DOT_CONFIG=y
+CONFIG_WERROR=n
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+CONFIG_LOGLEVEL=3
+
+# ---------------------------------------------------------------------------
+# Network / Download
+# ---------------------------------------------------------------------------
+# Enable HTTP/HTTPS download support
+CONFIG_CURL=y
+# Disable certificate verification (set to y for production with HTTPS)
+CONFIG_CURL_SSL=n
+# Enable download mode (fetch .swu from a URL)
+CONFIG_DOWNLOAD=y
+
+# ---------------------------------------------------------------------------
+# Hardware Compatibility
+# ---------------------------------------------------------------------------
+# Enforce hardware compatibility check before installing update
+# The hardware ID is read from /etc/hwrevision on the target
+CONFIG_HW_COMPATIBILITY=y
+CONFIG_HW_COMPATIBILITY_FILE="/etc/hwrevision"
+
+# ---------------------------------------------------------------------------
+# Bootloader Integration
+# ---------------------------------------------------------------------------
+# Enable U-Boot environment read/write support (for A/B partition switching)
+CONFIG_UBOOT=y
+
+# ---------------------------------------------------------------------------
+# Cryptography / Signatures
+# ---------------------------------------------------------------------------
+# Use OpenSSL for RSA signature verification
+CONFIG_SSL_IMPL_OPENSSL=y
+# Signature enforcement is controlled at runtime via swupdate.cfg, not here
+CONFIG_SIGNED_IMAGES=n
+
+# ---------------------------------------------------------------------------
+# Handlers — what types of payload swupdate can process
+# ---------------------------------------------------------------------------
+# Write raw images directly to block devices (needed for rootfs updates)
+CONFIG_RAW=y
+# Run shell scripts as part of the update (pre/post install hooks)
+CONFIG_SHELLSCRIPTHANDLER=y
+# Update U-Boot environment variables
+CONFIG_UBOOT_HANDLER=y
+# Extract tar/cpio archives
+CONFIG_ARCHIVE=y
+# Write to UBI volumes (needed for NAND flash — disable if using eMMC only)
+CONFIG_UBIVOL=n
+
+# ---------------------------------------------------------------------------
+# Web Interface
+# ---------------------------------------------------------------------------
+# Enable the built-in Mongoose web server (push updates via browser or curl)
+CONFIG_MONGOOSE=y
+CONFIG_MONGOOSEPORT=8080
+CONFIG_WEBSERVER=y
+
+# ---------------------------------------------------------------------------
+# Compression
+# ---------------------------------------------------------------------------
+CONFIG_GUNZIP=y
+CONFIG_ZLIB=y
+
+# ---------------------------------------------------------------------------
+# Parsers
+# ---------------------------------------------------------------------------
+# Support sw-description in libconfig format (the default format)
+CONFIG_LIBCONFIG=y
+# Support sw-description in JSON format (optional alternative)
+CONFIG_JSON=y
+
+# ---------------------------------------------------------------------------
+# Hash Verification
+# ---------------------------------------------------------------------------
+# Verify SHA256 checksums of update artifacts
+CONFIG_HASH_VERIFY=y
+
+# ---------------------------------------------------------------------------
+# Suricatta (Hawkbit OTA server integration) — disabled by default
+# ---------------------------------------------------------------------------
+# Enable only if you are using a Hawkbit server for OTA management
+CONFIG_SURICATTA=n

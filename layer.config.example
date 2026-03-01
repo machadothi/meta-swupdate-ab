@@ -1,0 +1,164 @@
+# =============================================================================
+# meta-swupdate-ab — Layer Configuration File
+# =============================================================================
+#
+# PURPOSE
+#   This file tells init-layer.sh how to generate the Yocto layer for YOUR
+#   specific embedded Linux project. Fill in the values below, then run:
+#
+#       cp layer.config.example layer.config
+#       nano layer.config          # (or any editor)
+#       ./init-layer.sh layer.config
+#
+# RULES
+#   - All values MUST be quoted with double-quotes: VAR="value"
+#   - Arrays use parentheses:  VAR=("item1" "item2")
+#   - If you only have ONE machine, arrays still need parentheses: VAR=("item")
+#   - No spaces around the = sign
+#   - Lines starting with # are comments and are ignored
+#
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# SECTION 1 — PROJECT IDENTITY
+# -----------------------------------------------------------------------------
+
+# Short name for your project. Used to name recipe directories and the CLI
+# update script. Must be lowercase, no spaces, no special characters.
+# Example: "myrouter", "gateway", "display-unit", "rpi-controller"
+PROJECT_NAME="myproject"
+
+# Yocto layer priority. Higher numbers override lower ones.
+# 9 is a safe default that sits above most upstream layers (priority 5-8).
+# Only change this if you have priority conflicts with other custom layers.
+LAYER_PRIORITY="9"
+
+# Space-separated list of Yocto release codenames your layer supports.
+# Common releases: zeus dunfell gatesgarth hardknott honister kirkstone
+#                  langdale mickledore nanbield scarthgap
+# Add the one(s) your Yocto project uses. When unsure, include several.
+YOCTO_RELEASES="kirkstone langdale mickledore nanbield scarthgap"
+
+
+# -----------------------------------------------------------------------------
+# SECTION 2 — MACHINES
+# -----------------------------------------------------------------------------
+# A "machine" in Yocto corresponds to a specific hardware board variant.
+# Your project might have one machine or several (e.g., different board revisions,
+# or different CPU/memory configurations that share the same software).
+#
+# All arrays in this section MUST have the same number of entries.
+
+# Machine names. These MUST exactly match the MACHINE variable you use in your
+# Yocto build (in local.conf or your distro config).
+# Example: ("imx8mm-board" "imx8mn-board")
+MACHINES=("mymachine")
+
+# Hardware ID for each machine. This is a short identifier that SWUpdate uses
+# to verify that an update package is compatible with the running hardware.
+# It goes into /etc/hwrevision on the target device.
+# Format: lowercase letters and hyphens only. Example: ("my-board" "my-board-v2")
+HW_IDS=("my-board")
+
+# Hardware version string. Applied to ALL machines.
+# Combined with HW_ID, this forms the hardware fingerprint: "<HW_ID> <HW_VERSION>"
+# Example: "1.0"
+HW_VERSION="1.0"
+
+# Space-separated list of hardware versions this update package is compatible with.
+# An update built for "1.0 2.0" can be installed on boards running either version.
+# This is a safety check — SWUpdate refuses to install on incompatible hardware.
+# Example: "1.0 2.0 3.0"
+HW_COMPAT_VERSIONS="1.0"
+
+
+# -----------------------------------------------------------------------------
+# SECTION 3 — STORAGE PARTITIONS
+# -----------------------------------------------------------------------------
+# A/B (dual rootfs) means you have two copies of the root filesystem on disk.
+# The system always runs from one (active), and updates are written to the other
+# (inactive). After reboot, the newly updated partition becomes active.
+#
+# You need to know your board's partition layout. Check with:
+#   - Your BSP documentation
+#   - `lsblk` or `cat /proc/partitions` on a running board
+#   - Your partition table (e.g., wks file in your Yocto build)
+
+# The block device for your main storage (eMMC, SD card, etc.)
+# Common values:
+#   /dev/mmcblk0  — SD card or eMMC on many boards (check yours!)
+#   /dev/mmcblk1  — Second MMC device
+#   /dev/mmcblk2  — Third MMC device (common on boards with eMMC + SD slot)
+#   /dev/sda      — USB storage or SATA
+EMMC_DEVICE="/dev/mmcblk2"
+
+# Partition NUMBER (integer) for rootfs slot A.
+# Example: if rootfs A is /dev/mmcblk2p2, set this to "2"
+ROOTFS_A_PART="2"
+
+# Partition NUMBER (integer) for rootfs slot B.
+# Example: if rootfs B is /dev/mmcblk2p3, set this to "3"
+ROOTFS_B_PART="3"
+
+
+# -----------------------------------------------------------------------------
+# SECTION 4 — BASE IMAGE
+# -----------------------------------------------------------------------------
+
+# The name of the Yocto image recipe that produces your root filesystem.
+# This is what you normally build with `bitbake <IMAGE_NAME>`.
+# Common examples:
+#   core-image-minimal     — Bare-minimum image (good for testing)
+#   core-image-base        — Base image with more utilities
+#   core-image-full-cmdline — Full command-line image
+#   my-custom-image        — Your project's custom image recipe
+BASE_IMAGE="core-image-minimal"
+
+# Filesystem type of your root filesystem image.
+# Must match what your image recipe produces (check IMAGE_FSTYPES in your config).
+# Common values: ext4, squashfs, ubifs
+# For most eMMC-based projects: ext4
+IMAGE_FSTYPE="ext4"
+
+# Software version for this OTA update package.
+# Displayed in update logs and useful for tracking deployed versions.
+# Use semantic versioning: MAJOR.MINOR.PATCH
+SW_VERSION="1.0.0"
+
+
+# -----------------------------------------------------------------------------
+# SECTION 5 — DEVICE IDENTIFICATION
+# -----------------------------------------------------------------------------
+# SWUpdate can tag each device with key=value pairs for tracking and filtering.
+# For example, you might want to identify devices by product line, region, or
+# hardware revision. This shows up in Hawkbit (the OTA server) if you use one.
+
+# The key name for device identification (same for all machines).
+# Examples: "product", "board", "device", "model"
+IDENTIFY_NAME="product"
+
+# The value for each machine's identification (one per entry in MACHINES).
+# Examples: ("gateway-v1" "gateway-v2") or ("display-unit")
+IDENTIFY_VALUES=("mydevice-v1.0")
+
+
+# -----------------------------------------------------------------------------
+# SECTION 6 — RSA SIGNING
+# -----------------------------------------------------------------------------
+# SWUpdate can verify that update packages were signed with YOUR private key.
+# This prevents installing malicious or corrupted updates.
+#
+# For development/testing: set ENABLE_SIGNING="no" — updates are not signed.
+# For production: set ENABLE_SIGNING="yes" — strongly recommended.
+
+# Enable RSA signature verification? ("yes" or "no")
+ENABLE_SIGNING="no"
+
+# Automatically generate a new RSA key pair? ("yes" or "no")
+# Only relevant when ENABLE_SIGNING="yes".
+# If "yes": init-layer.sh generates keys/swupdate_priv.pem and keys/swupdate_public.pem
+# If "no":  you must place your keys in the keys/ directory before running init.
+# WARNING: Generated keys are for development. For production, generate keys
+#          on a secure machine and NEVER commit the private key to git.
+GENERATE_KEYS="yes"

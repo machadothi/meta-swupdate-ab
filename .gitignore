@@ -1,0 +1,35 @@
+# =============================================================================
+# meta-swupdate-ab — Git ignore rules
+# =============================================================================
+
+# Private RSA key — NEVER commit this
+keys/swupdate_priv.pem
+keys/pass_phrase
+
+# User's local config (keep example, ignore the real one)
+layer.config
+
+# Generated Yocto recipe files (recreate with init-layer.sh)
+conf/layer.conf
+recipes-support/
+recipes-images/
+recipes-core/
+
+# Yocto build artifacts
+build/
+tmp/
+cache/
+sstate-cache/
+downloads/
+
+# Bitbake lock files
+bitbake.lock
+conf/sanity_info
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
