@@ -35,10 +35,10 @@ PROJECT_NAME="myproject"
 LAYER_PRIORITY="9"
 
 # Space-separated list of Yocto release codenames your layer supports.
-# Common releases: zeus dunfell gatesgarth hardknott honister kirkstone
-#                  langdale mickledore nanbield scarthgap
-# Add the one(s) your Yocto project uses. When unsure, include several.
-YOCTO_RELEASES="kirkstone langdale mickledore nanbield scarthgap"
+# Releases the generated recipes are written for: kirkstone and newer
+# (styhead and later need the UNPACKDIR handling the recipes include).
+# Add the one(s) your Yocto project uses.
+YOCTO_RELEASES="kirkstone scarthgap styhead walnascar"
 
 
 # -----------------------------------------------------------------------------

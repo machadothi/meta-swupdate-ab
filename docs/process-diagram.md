@@ -42,7 +42,7 @@ sequenceDiagram
         Init -->> BB   : Generate swupdate_%.bbappend (per-machine hwrevision + install rules)
         Init -->> BB   : Generate per-machine: 09-swupdate-args, swupdate.cfg
         Init -->> BB   : Generate update-image.bb + sw-description (per machine)
-        Init -->> BB   : Copy static scripts (update-post.sh,<br/>ota-update.sh, checkUpdateOTA.sh)
+        Init -->> BB   : Copy static scripts (update-post.sh, ab-slot.sh,<br/>ota-update.sh, checkUpdateOTA.sh)
 
         Dev  ->> BB    : Add meta-swupdate + meta-swupdate-ab to bblayers.conf
         Dev  ->> BB    : Add to image: swupdate, check-update-ota, libubootenv-bin

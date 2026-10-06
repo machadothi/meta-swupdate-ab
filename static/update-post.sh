@@ -8,7 +8,9 @@
 #   written to the inactive partition. It runs before the system reboots.
 #
 # WHAT IT DOES
-#   1. Mounts the newly updated (inactive) partition at /mnt/rootfs.
+#   1. Mounts the newly updated (inactive) partition at /mnt/rootfs. The
+#      partition comes from /usr/share/swupdate-ab/ab-slot.sh on the running
+#      system, the same detection SWUpdate used to pick the write target.
 #   2. Copies network configuration files from the active system into the
 #      new rootfs — so the device keeps its network settings after update.
 #   3. Runs filesystem integrity check (e2fsck) on the new partition.
@@ -49,30 +51,15 @@ case "$1" in
         echo "[update-post] Starting post-install hook"
 
         # --- Find the inactive (just updated) partition ---
-        CMDLINE=$(cat /proc/cmdline)
-        CURRENT_ROOT=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^root=' | head -1 | cut -d= -f2)
+        # Shared slot detection from the running system's swupdate package
+        . /usr/share/swupdate-ab/ab-slot.sh
 
-        if [ -z "$CURRENT_ROOT" ]; then
-            echo "[update-post] ERROR: Could not determine active root partition"
+        if ! TARGET_PART=$(ab_target_part); then
+            echo "[update-post] ERROR: Could not determine the active root partition"
             exit 1
         fi
 
-        BASE_DEV=$(echo "$CURRENT_ROOT" | sed 's/p[0-9]*$//')
-        CURRENT_PART=$(echo "$CURRENT_ROOT" | grep -o 'p[0-9]*$' | tr -d 'p')
-
-        PART_A="@@ROOTFS_A_PART@@"
-        PART_B="@@ROOTFS_B_PART@@"
-
-        if [ "$CURRENT_PART" = "$PART_A" ]; then
-            TARGET_PART="$PART_B"
-        elif [ "$CURRENT_PART" = "$PART_B" ]; then
-            TARGET_PART="$PART_A"
-        else
-            echo "[update-post] ERROR: Unrecognized current partition: $CURRENT_PART"
-            exit 1
-        fi
-
-        TARGET_DEV="${BASE_DEV}p${TARGET_PART}"
+        TARGET_DEV=$(ab_part_dev "$TARGET_PART")
         echo "[update-post] Newly updated partition: $TARGET_DEV"
 
         # --- Mount the new rootfs ---

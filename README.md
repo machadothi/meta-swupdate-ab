@@ -68,8 +68,9 @@ This Yocto layer integrates SWUpdate into your build and adds:
 | `swupdate_%.bbappend` | Configures the upstream SWUpdate build for your hardware |
 | `update-image.bb` | Builds the `.swu` update package |
 | `check-update-ota` | Systemd service that commits updates after successful boot |
-| `ota-update` | Command-line tool for installing updates from files |
-| Pre/post-install scripts | Handle partition detection, filesystem repair, config preservation |
+| `ota-update` | Command-line tool that hands a `.swu` file to the SWUpdate daemon |
+| `ab-slot.sh` | Shared A/B slot detection used by all on-device scripts |
+| Post-install script | Filesystem repair, config preservation |
 
 ---
 
@@ -139,7 +140,7 @@ It covers all 6 phases in a single view:
 
 | Tool | Purpose | Install (Ubuntu/Debian) |
 |------|---------|------------------------|
-| `bash` ≥ 4.0 | Required by `init-layer.sh` | Usually pre-installed |
+| `bash` ≥ 3.2 | Required by `init-layer.sh` | Usually pre-installed |
 | `openssl` | Generate RSA key pair | `apt install openssl` |
 | Yocto build environment | Build system | See [Yocto Quick Start](https://docs.yoctoproject.org/brief-yoctoprojectqs/index.html) |
 
@@ -166,9 +167,10 @@ Check compatibility: `meta-swupdate` supports the same Yocto releases listed in
 
 ### Supported Yocto Releases
 
-Tested with: **kirkstone, langdale, mickledore, nanbield, scarthgap**
+Written for **kirkstone and newer**; the generated recipes handle the
+`UNPACKDIR` change in styhead. There is no CI build yet, so treat
+`YOCTO_RELEASES` as declared compatibility, not tested compatibility.
 
-Likely works on older releases (honister, hardknott) but not tested.
 
 ---
 
@@ -206,7 +208,7 @@ All configuration lives in your `layer.config` file (copy from `layer.config.exa
 |----------|------|---------|-------------|
 | `PROJECT_NAME` | string | `"gateway"` | Short project identifier. No spaces, lowercase. Used in layer name and recipe paths. |
 | `LAYER_PRIORITY` | integer | `"9"` | Yocto layer priority. Higher overrides lower. Default 9 is safe for most projects. |
-| `YOCTO_RELEASES` | string | `"kirkstone langdale"` | Space-separated list of compatible Yocto codenames. |
+| `YOCTO_RELEASES` | string | `"kirkstone scarthgap"` | Space-separated list of compatible Yocto codenames. |
 
 ### Section 2: Machines
 
@@ -521,7 +523,10 @@ ssh root@<device-ip> 'ota-update /tmp/update-image-mymachine-v1.swu'
 
 ### What Happens During an Update
 
-1. `ota-update` detects which partition is active and selects the correct slot
+1. `ota-update` passes the file to the SWUpdate daemon (`swupdate-client`). At
+   startup the daemon picked the inactive slot (`09-swupdate-args`, using
+   `ab-slot.sh`: it compares the device mounted at `/` with both rootfs
+   partitions)
 2. SWUpdate verifies hardware compatibility (checks `/etc/hwrevision`)
 3. SWUpdate verifies signature (if signing is enabled)
 4. The rootfs image is streamed and written to the inactive partition
@@ -714,6 +719,19 @@ fw_printenv test_var
 
 If `fw_setenv` fails, fix `/etc/fw_env.config`.
 
+### swupdate service won't start: "Refusing to start SWUpdate"
+
+`09-swupdate-args` couldn't match the device mounted at `/` to either rootfs
+partition, so it won't guess a write target. Compare:
+
+```bash
+findmnt -n -o SOURCE,MAJ:MIN /          # what is mounted at /
+cat /usr/share/swupdate-ab/ab-slot.sh   # AB_DEVICE, AB_PART_A, AB_PART_B
+```
+
+Fix `EMMC_DEVICE`, `ROOTFS_A_PART` or `ROOTFS_B_PART` in `layer.config`, then
+re-run `init-layer.sh --force` and rebuild.
+
 ### SWUpdate logs
 
 ```bash
@@ -828,7 +846,8 @@ Re-run `init-layer.sh --force` to regenerate if you change `layer.config`.
 |------|--------------------------|-------------|
 | `defconfig` | (build-time only) | SWUpdate kconfig options |
 | `update-post.sh` | (runs inside .swu package) | Post-install hook |
-| `ota-update.sh` | `/usr/bin/ota-update` | CLI update helper |
+| `ota-update.sh` | `/usr/bin/ota-update` | CLI update helper (uses `swupdate-client`) |
+| `ab-slot.sh` | `/usr/share/swupdate-ab/ab-slot.sh` | Shared A/B slot detection |
 | `checkUpdateOTA.sh` | `/usr/bin/checkUpdateOTA.sh` | Rollback guard script (runs `/etc/ota-health.d/*`) |
 | `check-update-ota.service` | `${systemd_system_unitdir}/check-update-ota.service` | Systemd unit |
 | `check-update-ota.bb` | (build-time only) | Bitbake recipe |

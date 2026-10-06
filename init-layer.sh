@@ -98,6 +98,7 @@ check_dependencies
 CONFIG_FILE="layer.config"
 FORCE=false
 SKIPPED_FILES=0
+WRITTEN_FILES=()
 
 for arg in "$@"; do
     case "$arg" in
@@ -120,10 +121,17 @@ for arg in "$@"; do
     esac
 done
 
-# Resolve config path (absolute or relative to the script directory)
+# Resolve config path: absolute, relative to the current directory, or (for
+# the documented "./init-layer.sh layer.config") relative to the script directory
 case "$CONFIG_FILE" in
     /*) : ;;   # already absolute
-    *)  CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}" ;;
+    *)
+        if [ -f "$CONFIG_FILE" ]; then
+            CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+        else
+            CONFIG_FILE="${SCRIPT_DIR}/${CONFIG_FILE}"
+        fi
+        ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -164,6 +172,22 @@ NUM_MACHINES="${#MACHINES[@]}"
     || die "HW_IDS has ${#HW_IDS[@]} entries but MACHINES has $NUM_MACHINES -- must match"
 [ "${#IDENTIFY_VALUES[@]}" -eq "$NUM_MACHINES" ] \
     || die "IDENTIFY_VALUES has ${#IDENTIFY_VALUES[@]} entries but MACHINES has $NUM_MACHINES -- must match"
+
+# Names end up in bitbake variable names, overrides and directory names
+NAME_RE='^[a-z0-9][a-z0-9-]*$'
+[[ "$PROJECT_NAME" =~ $NAME_RE ]] \
+    || die "PROJECT_NAME must be lowercase letters, digits and hyphens (got: $PROJECT_NAME)"
+for m in "${MACHINES[@]}"; do
+    [[ "$m" =~ $NAME_RE ]] \
+        || die "Machine names must be lowercase letters, digits and hyphens (got: $m)"
+done
+# HW_ID and HW_VERSION are joined as "<id> <version>" in /etc/hwrevision and as
+# "<id>:<version>" for swupdate -H, so neither may contain spaces or colons
+for v in "${HW_IDS[@]}" "$HW_VERSION"; do
+    case "$v" in
+        *[[:space:]:]*) die "HW_IDS and HW_VERSION must not contain spaces or colons (got: '$v')" ;;
+    esac
+done
 
 # Validate EMMC_DEVICE looks like a block device path
 case "$EMMC_DEVICE" in
@@ -209,6 +233,16 @@ printf "  eMMC device  : %s (part A=%s, B=%s)\n" \
 printf "  Signing      : %s\n"  "$ENABLE_SIGNING"
 printf "  Web server   : %s\n"  "$ENABLE_WEBSERVER"
 
+# Device node of partition number $1 -- same rule as ab_part_dev in
+# static/ab-slot.sh: a "p" separator only when the disk name ends in a digit
+# (mmcblk2 -> mmcblk2p3, nvme0n1 -> nvme0n1p3, but sda -> sda3)
+part_dev() {
+    case "$EMMC_DEVICE" in
+        *[0-9]) echo "${EMMC_DEVICE}p$1" ;;
+        *)      echo "${EMMC_DEVICE}$1" ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Derived paths
 # ---------------------------------------------------------------------------
@@ -233,6 +267,7 @@ write_file() {
     fi
     mkdir -p "$(dirname "$path")"
     printf '%s' "$content" > "$path"
+    WRITTEN_FILES+=("${path#"${SCRIPT_DIR}/"}")
     success "Generated: ${path#"${SCRIPT_DIR}/"}"
 }
 
@@ -250,6 +285,7 @@ copy_file() {
     fi
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
+    WRITTEN_FILES+=("${dst#"${SCRIPT_DIR}/"}")
     success "Copied: ${dst#"${SCRIPT_DIR}/"}"
 }
 
@@ -327,20 +363,19 @@ step "Copying static files"
 
 copy_file "${STATIC_DIR}/defconfig"                "${SWUPDATE_FILES}/defconfig"
 copy_file "${STATIC_DIR}/ota-update.sh"            "${SWUPDATE_FILES}/ota-update.sh"
+copy_file "${STATIC_DIR}/ab-slot.sh"               "${SWUPDATE_FILES}/ab-slot.sh"
 copy_file "${STATIC_DIR}/update-post.sh"           "${UPDATE_IMAGE_FILES}/update-post.sh"
 copy_file "${STATIC_DIR}/checkUpdateOTA.sh"        "${RECIPES_CORE}/files/checkUpdateOTA.sh"
 copy_file "${STATIC_DIR}/check-update-ota.service" "${RECIPES_CORE}/files/check-update-ota.service"
 copy_file "${STATIC_DIR}/check-update-ota.bb"      "${RECIPES_CORE}/check-update-ota.bb"
 
-# Substitute @@ROOTFS_X_PART@@ placeholders in the copied scripts.
-# Using replace_in_file (sed + mktemp) -- works on any POSIX-compliant system.
-for f in \
-    "${SWUPDATE_FILES}/ota-update.sh" \
-    "${UPDATE_IMAGE_FILES}/update-post.sh"; do
-    replace_in_file "$f" "@@ROOTFS_A_PART@@" "${ROOTFS_A_PART}"
-    replace_in_file "$f" "@@ROOTFS_B_PART@@" "${ROOTFS_B_PART}"
-done
-success "Partition numbers substituted in scripts"
+# Substitute the storage layout into the shared slot helper; every on-device
+# script gets it from there. Using replace_in_file (sed + mktemp) -- works on
+# any POSIX-compliant system.
+replace_in_file "${SWUPDATE_FILES}/ab-slot.sh" "@@EMMC_DEVICE@@"   "${EMMC_DEVICE}"
+replace_in_file "${SWUPDATE_FILES}/ab-slot.sh" "@@ROOTFS_A_PART@@" "${ROOTFS_A_PART}"
+replace_in_file "${SWUPDATE_FILES}/ab-slot.sh" "@@ROOTFS_B_PART@@" "${ROOTFS_B_PART}"
+success "Storage layout substituted in ab-slot.sh"
 
 # Feature switches in the SWUpdate defconfig always follow layer.config, even
 # when the file itself was kept (no --force), so toggling them never goes stale.
@@ -432,6 +467,7 @@ UNPACKDIR ??= \"\${WORKDIR}\"
 SRC_URI += \" \\
     file://defconfig \\
     file://ota-update.sh \\
+    file://ab-slot.sh \\
     file://09-swupdate-args \\
     file://swupdate.cfg \\${KEY_SRC_URI}
 \"
@@ -445,6 +481,11 @@ do_install:append() {
     install -d \${D}\${sysconfdir}
     install -m 0644 \${UNPACKDIR}/swupdate.cfg \${D}\${sysconfdir}/swupdate.cfg
 ${KEY_INSTALL}
+    # Shared A/B slot detection, sourced by 09-swupdate-args, ota-update and
+    # update-post.sh (outside conf.d: everything there is sourced at startup)
+    install -d \${D}\${datadir}/swupdate-ab
+    install -m 0644 \${UNPACKDIR}/ab-slot.sh \${D}\${datadir}/swupdate-ab/ab-slot.sh
+
     # CLI update helper
     install -d \${D}\${bindir}
     install -m 0755 \${UNPACKDIR}/ota-update.sh \${D}\${bindir}/ota-update
@@ -457,8 +498,12 @@ FILES:\${PN} += \" \\
     \${libdir}/swupdate/conf.d/09-swupdate-args \\
     \${sysconfdir}/swupdate.cfg \\${KEY_FILES}
     \${sysconfdir}/hwrevision \\
+    \${datadir}/swupdate-ab/ab-slot.sh \\
     \${bindir}/ota-update \\
 \"
+
+# ota-update hands packages to the running daemon with swupdate-client
+RDEPENDS:\${PN} += \"\${PN}-client\"
 "
 
 # ---------------------------------------------------------------------------
@@ -496,31 +541,22 @@ for i in "${!MACHINES[@]}"; do
 # 09-swupdate-args -- SWUpdate Startup Arguments for machine: ${MACHINE}
 # =============================================================================
 # Sourced (not executed) by swupdate.sh at daemon startup.
-# Detects the currently active rootfs partition, selects the opposite slot as
-# the update target, and builds the SWUPDATE_ARGS variable.
+# Detects the currently active rootfs partition (via ab-slot.sh), selects the
+# opposite slot as the update target, and builds the SWUPDATE_ARGS variable.
 # If the active slot cannot be determined, SWUpdate is NOT started: guessing
 # could select the running partition as the write target.
 # =============================================================================
 
-CMDLINE=\"\$(cat /proc/cmdline)\"
-CURRENT_ROOT=\"\$(echo \"\$CMDLINE\" | tr ' ' '\n' | grep '^root=' | head -1 | cut -d= -f2)\"
-CURRENT_PART=\"\$(echo \"\$CURRENT_ROOT\" | grep -o 'p[0-9]*\$' | tr -d 'p')\"
+. /usr/share/swupdate-ab/ab-slot.sh
 
-PART_A=\"${ROOTFS_A_PART}\"
-PART_B=\"${ROOTFS_B_PART}\"
-
-if [ \"\$CURRENT_PART\" = \"\$PART_A\" ]; then
-    selection=\"-e stable,rootfs2\"
-elif [ \"\$CURRENT_PART\" = \"\$PART_B\" ]; then
-    selection=\"-e stable,rootfs1\"
-else
-    echo \"[09-swupdate-args] ERROR: active partition '\$CURRENT_PART' is neither \$PART_A nor \$PART_B\" >&2
+if ! AB_SELECTION=\"\$(ab_selection)\"; then
+    echo \"[09-swupdate-args] ERROR: / is on neither \$(ab_part_dev \"\$AB_PART_A\") nor \$(ab_part_dev \"\$AB_PART_B\")\" >&2
     echo \"[09-swupdate-args] Refusing to start SWUpdate: it could overwrite the running rootfs\" >&2
     exit 1
 fi
 
 # -H <HW_ID>:<HW_VERSION> must match /etc/hwrevision on the device
-SWUPDATE_ARGS=\"-H ${HW_ID}:${HW_VERSION} \${selection} -f /etc/swupdate.cfg\"
+SWUPDATE_ARGS=\"-H ${HW_ID}:${HW_VERSION} -e \${AB_SELECTION} -f /etc/swupdate.cfg\"
 "
 
     # --- swupdate.cfg ---
@@ -570,8 +606,8 @@ webserver:
 
     # --- sw-description ---
     IMAGE_FILE="${BASE_IMAGE}-${MACHINE}.${IMAGE_FSTYPE}.gz"
-    DEVICE_A="${EMMC_DEVICE}p${ROOTFS_A_PART}"
-    DEVICE_B="${EMMC_DEVICE}p${ROOTFS_B_PART}"
+    DEVICE_A="$(part_dev "$ROOTFS_A_PART")"
+    DEVICE_B="$(part_dev "$ROOTFS_B_PART")"
 
     write_file "${MACHINE_IMAGE_DIR}/sw-description" \
 "/* =============================================================================
@@ -733,20 +769,12 @@ printf "\n${BOLD}${GREEN}=======================================================
 printf "${BOLD}${GREEN}  meta-swupdate-ab initialized successfully!${RESET}\n"
 printf "${BOLD}${GREEN}============================================================${RESET}\n\n"
 
-printf "${BOLD}Generated files:${RESET}\n"
-find "${SCRIPT_DIR}" \
-    -not -path '*/.git/*' \
-    -not -path '*/static/*' \
-    -not -path '*/keys/*' \
-    -not -name 'init-layer.sh' \
-    -not -name 'layer.config*' \
-    -not -name 'README.md' \
-    -not -name '.gitignore' \
-    -newer "${CONFIG_FILE}" \
-    -type f \
-    | sort \
-    | sed "s|${SCRIPT_DIR}/||" \
-    | while IFS= read -r f; do printf "  + %s\n" "$f"; done
+printf "${BOLD}Files written in this run:${RESET}\n"
+if [ "${#WRITTEN_FILES[@]}" -gt 0 ]; then
+    printf "  + %s\n" "${WRITTEN_FILES[@]}"
+else
+    printf "  (none -- all files already existed)\n"
+fi
 
 printf "\n${BOLD}Next steps:${RESET}\n\n"
 printf "  1. Add this layer to your Yocto build's bblayers.conf:\n"
