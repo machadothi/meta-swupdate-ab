@@ -46,8 +46,12 @@ CONFIG_UBOOT=y
 # ---------------------------------------------------------------------------
 # Use OpenSSL for RSA signature verification
 CONFIG_SSL_IMPL_OPENSSL=y
-# Signature enforcement is controlled at runtime via swupdate.cfg, not here
+# Signature verification must be compiled in: with CONFIG_SIGNED_IMAGES=n,
+# SWUpdate accepts unsigned .swu files whatever swupdate.cfg says.
+# init-layer.sh sets this from ENABLE_SIGNING in layer.config.
 CONFIG_SIGNED_IMAGES=n
+# Raw RSA signatures, matching SWUPDATE_SIGNING = "RSA" in update-image.bb
+CONFIG_SIGALG_RAWRSA=y
 
 # ---------------------------------------------------------------------------
 # Handlers — what types of payload swupdate can process
@@ -66,10 +70,13 @@ CONFIG_UBIVOL=n
 # ---------------------------------------------------------------------------
 # Web Interface
 # ---------------------------------------------------------------------------
-# Enable the built-in Mongoose web server (push updates via browser or curl)
-CONFIG_MONGOOSE=y
+# Built-in Mongoose web server (push updates via browser or curl).
+# init-layer.sh sets these from ENABLE_WEBSERVER in layer.config. The server has
+# no authentication: anyone who can reach port 8080 can push an update, so only
+# enable it with signing on, or on a trusted network.
+CONFIG_MONGOOSE=n
 CONFIG_MONGOOSEPORT=8080
-CONFIG_WEBSERVER=y
+CONFIG_WEBSERVER=n
 
 # ---------------------------------------------------------------------------
 # Compression

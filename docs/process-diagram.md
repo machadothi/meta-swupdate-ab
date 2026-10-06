@@ -42,10 +42,10 @@ sequenceDiagram
         Init -->> BB   : Generate swupdate_%.bbappend (per-machine hwrevision + install rules)
         Init -->> BB   : Generate per-machine: 09-swupdate-args, swupdate.cfg
         Init -->> BB   : Generate update-image.bb + sw-description (per machine)
-        Init -->> BB   : Copy static scripts (update-pre.sh, update-post.sh,<br/>ota-update.sh, checkUpdateOTA.sh)
+        Init -->> BB   : Copy static scripts (update-post.sh,<br/>ota-update.sh, checkUpdateOTA.sh)
 
         Dev  ->> BB    : Add meta-swupdate + meta-swupdate-ab to bblayers.conf
-        Dev  ->> BB    : Add to image: swupdate, check-update-ota, u-boot-tools
+        Dev  ->> BB    : Add to image: swupdate, check-update-ota, libubootenv-bin
         Dev  ->> BB    : Add IMAGE_FSTYPES += " ext4.gz"
     end
 
@@ -89,7 +89,7 @@ sequenceDiagram
             SSL -->> BB : Append RSA signature block to .swu
         end
 
-        BB -->> Dev : update-image-<machine>.swu  →  tmp/deploy/swu/
+        BB -->> Dev : update-image-<machine>.swu  →  tmp/deploy/images/<machine>/
     end
 
 
@@ -127,8 +127,6 @@ sequenceDiagram
         SW  ->> SW  : Compare against sw-description hardware-compatibility list
         SW  --x SW  : ABORT — hardware version not in compatibility list
 
-        SW  ->> SW  : Run update-pre.sh (preinst hook)<br/>· Read /proc/cmdline → find active partition<br/>· Determine inactive partition (the target)<br/>· Create symlink: /dev/update → <inactive partition>
-
         SW  ->> SW  : Stream + write <BASE_IMAGE>-<machine>.ext4.gz<br/>directly to inactive partition (installed-directly=true)
 
         SW  ->> SW  : Run update-post.sh (postinst hook)<br/>· Mount newly written partition<br/>· Copy /etc/NetworkManager configs → preserve network settings<br/>· Run e2fsck -a -f  (filesystem integrity check)<br/>· Run resize2fs -f  (expand fs to fill partition)<br/>· Unmount + sync
@@ -153,6 +151,7 @@ sequenceDiagram
         alt New system boots and all services start
             UBoot -->> Cmit : Kernel + systemd start on new partition
             Cmit  ->> UBoot : fw_printenv upgrade_available  →  "1"
+            Cmit  ->> Cmit  : Run health checks in /etc/ota-health.d/ (all must pass)
             Cmit  ->> UBoot : fw_setenv upgrade_available = 0
             Cmit  ->> UBoot : fw_setenv bootcount = 0
             Note over Cmit  : Update COMMITTED ✓  Rollback window closed

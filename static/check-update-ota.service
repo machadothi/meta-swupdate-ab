@@ -1,17 +1,20 @@
 [Unit]
 Description=OTA Update Rollback Guard — commits successful boots after an update
 Documentation=https://github.com/your-org/meta-swupdate-ab
-# Run after the network is up and basic services are started
-After=multi-user.target
-# Only run once — if it fails, do not retry (a failed commit means rollback kicks in)
-StartLimitIntervalSec=0
+# No After=multi-user.target: multi-user.target already orders itself after the
+# units it wants, so that would be an ordering cycle and systemd could drop
+# this job. Instead, order it after the services that define a "healthy" boot
+# for your product, e.g.:
+#   After=my-app.service
+#   Wants=my-app.service
+After=basic.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/checkUpdateOTA.sh
 # Keep the unit in "active" state after the script exits (for status checking)
 RemainAfterExit=true
-# Do not restart on failure — let U-Boot handle the rollback
+# Do not restart on failure — an uncommitted update is rolled back by U-Boot
 Restart=no
 
 [Install]

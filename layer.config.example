@@ -159,6 +159,19 @@ ENABLE_SIGNING="no"
 # Only relevant when ENABLE_SIGNING="yes".
 # If "yes": init-layer.sh generates keys/swupdate_priv.pem and keys/swupdate_public.pem
 # If "no":  you must place your keys in the keys/ directory before running init.
+# An existing keys/swupdate_priv.pem is never overwritten, not even with --force.
 # WARNING: Generated keys are for development. For production, generate keys
 #          on a secure machine and NEVER commit the private key to git.
 GENERATE_KEYS="yes"
+
+
+# -----------------------------------------------------------------------------
+# SECTION 7 — WEB SERVER
+# -----------------------------------------------------------------------------
+# SWUpdate's built-in web server (port 8080) lets you push updates from a
+# browser or with curl. It has NO authentication: anyone who can reach the
+# device can install an update. Only enable it together with ENABLE_SIGNING="yes"
+# or on a trusted network.
+
+# Build the web server into SWUpdate? ("yes" or "no")
+ENABLE_WEBSERVER="no"

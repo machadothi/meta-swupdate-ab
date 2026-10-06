@@ -97,6 +97,7 @@ check_dependencies
 # ---------------------------------------------------------------------------
 CONFIG_FILE="layer.config"
 FORCE=false
+SKIPPED_FILES=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -149,10 +150,14 @@ for var in "${REQUIRED_VARS[@]}"; do
 Please set it in $CONFIG_FILE"
 done
 
-# Required arrays
-[ "${#MACHINES[@]:-0}" -gt 0 ]        || die "MACHINES array is empty or missing"
-[ "${#HW_IDS[@]:-0}" -gt 0 ]          || die "HW_IDS array is empty or missing"
-[ "${#IDENTIFY_VALUES[@]:-0}" -gt 0 ] || die "IDENTIFY_VALUES array is empty or missing"
+# Required arrays (declare -p first: under 'set -u' an unset array aborts with an
+# unhelpful "unbound variable" message instead of our own error)
+for arr in MACHINES HW_IDS IDENTIFY_VALUES; do
+    declare -p "$arr" > /dev/null 2>&1 || die "$arr array is missing from config"
+done
+[ "${#MACHINES[@]}" -gt 0 ]        || die "MACHINES array is empty"
+[ "${#HW_IDS[@]}" -gt 0 ]          || die "HW_IDS array is empty"
+[ "${#IDENTIFY_VALUES[@]}" -gt 0 ] || die "IDENTIFY_VALUES array is empty"
 
 NUM_MACHINES="${#MACHINES[@]}"
 [ "${#HW_IDS[@]}" -eq "$NUM_MACHINES" ] \
@@ -185,6 +190,15 @@ case "$GENERATE_KEYS" in
     yes|no) : ;;
     *) die "GENERATE_KEYS must be 'yes' or 'no' (got: $GENERATE_KEYS)" ;;
 esac
+# Optional: older configs predate this setting, so default to the safe value
+ENABLE_WEBSERVER="${ENABLE_WEBSERVER:-no}"
+case "$ENABLE_WEBSERVER" in
+    yes|no) : ;;
+    *) die "ENABLE_WEBSERVER must be 'yes' or 'no' (got: $ENABLE_WEBSERVER)" ;;
+esac
+if [ "$ENABLE_WEBSERVER" = "yes" ] && [ "$ENABLE_SIGNING" = "no" ]; then
+    warn "ENABLE_WEBSERVER=yes without signing: anyone on the network can install an update"
+fi
 
 success "Configuration validated"
 printf "  Project name : %s\n"  "$PROJECT_NAME"
@@ -193,6 +207,7 @@ printf "  Base image   : %s\n"  "$BASE_IMAGE"
 printf "  eMMC device  : %s (part A=%s, B=%s)\n" \
     "$EMMC_DEVICE" "$ROOTFS_A_PART" "$ROOTFS_B_PART"
 printf "  Signing      : %s\n"  "$ENABLE_SIGNING"
+printf "  Web server   : %s\n"  "$ENABLE_WEBSERVER"
 
 # ---------------------------------------------------------------------------
 # Derived paths
@@ -213,6 +228,7 @@ write_file() {
     local content="$2"
     if [ -f "$path" ] && [ "$FORCE" = false ]; then
         warn "File exists (use --force to overwrite): ${path#"${SCRIPT_DIR}/"}"
+        SKIPPED_FILES=$((SKIPPED_FILES + 1))
         return
     fi
     mkdir -p "$(dirname "$path")"
@@ -229,6 +245,7 @@ copy_file() {
     [ -f "$src" ] || die "Static source file missing: $src"
     if [ -f "$dst" ] && [ "$FORCE" = false ]; then
         warn "File exists (use --force to overwrite): ${dst#"${SCRIPT_DIR}/"}"
+        SKIPPED_FILES=$((SKIPPED_FILES + 1))
         return
     fi
     mkdir -p "$(dirname "$dst")"
@@ -246,19 +263,28 @@ PUB_KEY="${KEYS_DIR}/swupdate_public.pem"
 
 if [ "$ENABLE_SIGNING" = "yes" ]; then
     if [ "$GENERATE_KEYS" = "yes" ]; then
-        if [ -f "$PRIV_KEY" ] && [ "$FORCE" = false ]; then
-            warn "Key pair already exists in keys/ -- skipping (use --force to regenerate)"
+        # Never overwrite an existing private key, not even with --force:
+        # devices in the field only accept updates signed with the key whose
+        # public half they carry, so replacing it locks them out of future updates.
+        if [ -f "$PRIV_KEY" ]; then
+            info "Private key already exists in keys/ -- keeping it"
+            info "To rotate keys, move the old pair away manually first"
         else
             command -v openssl > /dev/null 2>&1 \
                 || die "openssl not found.
 Install it:  sudo apt-get install openssl
 Or set GENERATE_KEYS=no and place your own keys in keys/"
             info "Generating RSA 4096-bit key pair..."
-            openssl genrsa -out "$PRIV_KEY" 4096 2>/dev/null
-            openssl rsa -in "$PRIV_KEY" -out "$PUB_KEY" -pubout 2>/dev/null
-            chmod 600 "$PRIV_KEY"
-            success "Key pair generated in keys/"
+            # umask in a subshell so the private key is never world-readable,
+            # not even between creation and a later chmod
+            ( umask 077; openssl genrsa -out "$PRIV_KEY" 4096 2>/dev/null )
+            success "Private key generated in keys/"
             warn "IMPORTANT: Never commit keys/swupdate_priv.pem to a public repository!"
+        fi
+        if [ ! -f "$PUB_KEY" ]; then
+            openssl rsa -in "$PRIV_KEY" -out "$PUB_KEY" -pubout 2>/dev/null \
+                || die "Could not derive keys/swupdate_public.pem from the private key"
+            success "Public key derived from keys/swupdate_priv.pem"
         fi
     else
         [ -f "$PRIV_KEY" ] \
@@ -300,7 +326,6 @@ success "Directories created"
 step "Copying static files"
 
 copy_file "${STATIC_DIR}/defconfig"                "${SWUPDATE_FILES}/defconfig"
-copy_file "${STATIC_DIR}/update-pre.sh"            "${SWUPDATE_FILES}/update-pre.sh"
 copy_file "${STATIC_DIR}/ota-update.sh"            "${SWUPDATE_FILES}/ota-update.sh"
 copy_file "${STATIC_DIR}/update-post.sh"           "${UPDATE_IMAGE_FILES}/update-post.sh"
 copy_file "${STATIC_DIR}/checkUpdateOTA.sh"        "${RECIPES_CORE}/files/checkUpdateOTA.sh"
@@ -310,7 +335,6 @@ copy_file "${STATIC_DIR}/check-update-ota.bb"      "${RECIPES_CORE}/check-update
 # Substitute @@ROOTFS_X_PART@@ placeholders in the copied scripts.
 # Using replace_in_file (sed + mktemp) -- works on any POSIX-compliant system.
 for f in \
-    "${SWUPDATE_FILES}/update-pre.sh" \
     "${SWUPDATE_FILES}/ota-update.sh" \
     "${UPDATE_IMAGE_FILES}/update-post.sh"; do
     replace_in_file "$f" "@@ROOTFS_A_PART@@" "${ROOTFS_A_PART}"
@@ -318,26 +342,26 @@ for f in \
 done
 success "Partition numbers substituted in scripts"
 
-# Copy or generate the public key
+# Feature switches in the SWUpdate defconfig always follow layer.config, even
+# when the file itself was kept (no --force), so toggling them never goes stale.
+# CONFIG_SIGNED_IMAGES must be compiled in: without it SWUpdate accepts unsigned
+# .swu files no matter what swupdate.cfg says.
+yn_to_kconfig() { [ "$1" = "yes" ] && echo y || echo n; }
+SIGNED_KCONFIG="$(yn_to_kconfig "$ENABLE_SIGNING")"
+WEB_KCONFIG="$(yn_to_kconfig "$ENABLE_WEBSERVER")"
+replace_in_file "${SWUPDATE_FILES}/defconfig" \
+    "^CONFIG_SIGNED_IMAGES=[yn]$" "CONFIG_SIGNED_IMAGES=${SIGNED_KCONFIG}"
+replace_in_file "${SWUPDATE_FILES}/defconfig" \
+    "^CONFIG_MONGOOSE=[yn]$" "CONFIG_MONGOOSE=${WEB_KCONFIG}"
+replace_in_file "${SWUPDATE_FILES}/defconfig" \
+    "^CONFIG_WEBSERVER=[yn]$" "CONFIG_WEBSERVER=${WEB_KCONFIG}"
+success "defconfig: CONFIG_SIGNED_IMAGES=${SIGNED_KCONFIG}, CONFIG_WEBSERVER=${WEB_KCONFIG}"
+
+# The public key always mirrors keys/ (no --force needed): a stale copy would
+# make every correctly signed update fail verification on the device.
 if [ "$ENABLE_SIGNING" = "yes" ]; then
-    copy_file "${PUB_KEY}" "${SWUPDATE_FILES}/swupdate_public.pem"
-else
-    # A placeholder key is needed so bitbake's SRC_URI reference resolves.
-    # Signing is still disabled at runtime (public-key-file commented in swupdate.cfg).
-    if [ ! -f "${SWUPDATE_FILES}/swupdate_public.pem" ]; then
-        if command -v openssl > /dev/null 2>&1; then
-            info "Creating placeholder public key (signing is disabled at runtime)..."
-            tmp_priv=$(mktemp)
-            openssl genrsa -out "$tmp_priv" 2048 2>/dev/null
-            openssl rsa -in "$tmp_priv" -out "${SWUPDATE_FILES}/swupdate_public.pem" \
-                -pubout 2>/dev/null
-            rm -f "$tmp_priv"
-            success "Placeholder public key created"
-        else
-            warn "openssl not found -- you must provide swupdate_public.pem manually:"
-            warn "  Path: ${SWUPDATE_FILES}/swupdate_public.pem"
-        fi
-    fi
+    cp "${PUB_KEY}" "${SWUPDATE_FILES}/swupdate_public.pem"
+    success "Copied: ${SWUPDATE_FILES#"${SCRIPT_DIR}/"}/swupdate_public.pem"
 fi
 
 # ---------------------------------------------------------------------------
@@ -368,7 +392,6 @@ LAYERSERIES_COMPAT_${PROJECT_NAME}-swupdate = \"${YOCTO_RELEASES}\"
 step "Generating swupdate_%.bbappend"
 
 HWREV_BLOCKS=""
-SRCURI_BLOCKS=""
 for i in "${!MACHINES[@]}"; do
     m="${MACHINES[$i]}"
     hwid="${HW_IDS[$i]}"
@@ -377,13 +400,23 @@ do_install:append:${m}() {
     echo \"${hwid} ${HW_VERSION}\" > \${D}\${sysconfdir}/hwrevision
 }
 "
-    SRCURI_BLOCKS="${SRCURI_BLOCKS}
-SRC_URI:append:${m} = \" \\
-    file://${m}/09-swupdate-args \\
-    file://${m}/swupdate.cfg \\
-\"
-"
 done
+
+# The public key is only shipped when signing is enabled
+if [ "$ENABLE_SIGNING" = "yes" ]; then
+    KEY_SRC_URI="
+    file://swupdate_public.pem \\"
+    KEY_INSTALL="
+    # RSA public key for signature verification
+    install -m 0644 \${UNPACKDIR}/swupdate_public.pem \${D}\${sysconfdir}/swupdate_public.pem
+"
+    KEY_FILES="
+    \${sysconfdir}/swupdate_public.pem \\"
+else
+    KEY_SRC_URI=""
+    KEY_INSTALL=""
+    KEY_FILES=""
+fi
 
 write_file "${RECIPES_SUPPORT}/swupdate_%.bbappend" \
 "# SWUpdate recipe extension for ${PROJECT_NAME}
@@ -391,35 +424,30 @@ write_file "${RECIPES_SUPPORT}/swupdate_%.bbappend" \
 
 FILESEXTRAPATHS:prepend := \"\${THISDIR}/\${PN}:\"
 
-# Files shared across all machines
+# Releases before styhead unpack into WORKDIR and have no UNPACKDIR
+UNPACKDIR ??= \"\${WORKDIR}\"
+
+# 09-swupdate-args and swupdate.cfg are per machine: bitbake picks them from
+# swupdate/<MACHINE>/ automatically (FILESOVERRIDES), so no per-machine SRC_URI.
 SRC_URI += \" \\
     file://defconfig \\
-    file://update-pre.sh \\
     file://ota-update.sh \\
-    file://swupdate_public.pem \\
+    file://09-swupdate-args \\
+    file://swupdate.cfg \\${KEY_SRC_URI}
 \"
 
-# Per-machine configuration files
-${SRCURI_BLOCKS}
-
 do_install:append() {
-    # Startup argument script (detects active partition at daemon start)
+    # Startup argument script, sourced by swupdate.sh (selects the inactive slot)
     install -d \${D}\${libdir}/swupdate/conf.d
-    install -m 0755 \${WORKDIR}/09-swupdate-args \${D}\${libdir}/swupdate/conf.d/09-swupdate-args
-
-    # Pre-install hook (creates /dev/update symlink before image write)
-    install -m 0755 \${WORKDIR}/update-pre.sh \${D}\${libdir}/swupdate/conf.d/update-pre.sh
+    install -m 0644 \${UNPACKDIR}/09-swupdate-args \${D}\${libdir}/swupdate/conf.d/09-swupdate-args
 
     # Runtime configuration
     install -d \${D}\${sysconfdir}
-    install -m 0644 \${WORKDIR}/swupdate.cfg \${D}\${sysconfdir}/swupdate.cfg
-
-    # RSA public key for signature verification
-    install -m 0644 \${WORKDIR}/swupdate_public.pem \${D}\${sysconfdir}/swupdate_public.pem
-
+    install -m 0644 \${UNPACKDIR}/swupdate.cfg \${D}\${sysconfdir}/swupdate.cfg
+${KEY_INSTALL}
     # CLI update helper
     install -d \${D}\${bindir}
-    install -m 0755 \${WORKDIR}/ota-update.sh \${D}\${bindir}/ota-update
+    install -m 0755 \${UNPACKDIR}/ota-update.sh \${D}\${bindir}/ota-update
 }
 
 # /etc/hwrevision: \"<HW_ID> <HW_VERSION>\" -- read by SWUpdate for compatibility check
@@ -427,9 +455,7 @@ ${HWREV_BLOCKS}
 
 FILES:\${PN} += \" \\
     \${libdir}/swupdate/conf.d/09-swupdate-args \\
-    \${libdir}/swupdate/conf.d/update-pre.sh \\
-    \${sysconfdir}/swupdate.cfg \\
-    \${sysconfdir}/swupdate_public.pem \\
+    \${sysconfdir}/swupdate.cfg \\${KEY_FILES}
     \${sysconfdir}/hwrevision \\
     \${bindir}/ota-update \\
 \"
@@ -469,9 +495,11 @@ for i in "${!MACHINES[@]}"; do
 # =============================================================================
 # 09-swupdate-args -- SWUpdate Startup Arguments for machine: ${MACHINE}
 # =============================================================================
-# Sourced by the swupdate init script at daemon startup.
+# Sourced (not executed) by swupdate.sh at daemon startup.
 # Detects the currently active rootfs partition, selects the opposite slot as
 # the update target, and builds the SWUPDATE_ARGS variable.
+# If the active slot cannot be determined, SWUpdate is NOT started: guessing
+# could select the running partition as the write target.
 # =============================================================================
 
 CMDLINE=\"\$(cat /proc/cmdline)\"
@@ -486,8 +514,9 @@ if [ \"\$CURRENT_PART\" = \"\$PART_A\" ]; then
 elif [ \"\$CURRENT_PART\" = \"\$PART_B\" ]; then
     selection=\"-e stable,rootfs1\"
 else
-    echo \"[09-swupdate-args] WARNING: unknown current partition '\$CURRENT_PART'\" >&2
-    selection=\"-e stable,rootfs1\"
+    echo \"[09-swupdate-args] ERROR: active partition '\$CURRENT_PART' is neither \$PART_A nor \$PART_B\" >&2
+    echo \"[09-swupdate-args] Refusing to start SWUpdate: it could overwrite the running rootfs\" >&2
+    exit 1
 fi
 
 # -H <HW_ID>:<HW_VERSION> must match /etc/hwrevision on the device
@@ -550,9 +579,6 @@ webserver:
  * =============================================================================
  * Format: libconfig  https://hyperrealm.github.io/libconfig/
  * Reference: https://sbabic.github.io/swupdate/sw-description.html
- *
- * TODO: Fill in the sha256 fields with the actual hash of your image file:
- *   sha256sum <build>/tmp/deploy/images/${MACHINE}/${IMAGE_FILE}
  * ============================================================================= */
 
 software:
@@ -581,15 +607,18 @@ software:
                     device = \"${DEVICE_A}\";
                     compressed = \"zlib\";       /* image is gzip-compressed */
                     installed-directly = true; /* stream to device (conserves RAM) */
-                    sha256 = \"\";              /* TODO: insert SHA256 hash here */
+                    /* filled in by the swupdate class at build time */
+                    sha256 = \"\$swupdate_get_sha256(${IMAGE_FILE})\";
                 }
             );
 
             scripts: (
                 {
+                    /* shellscript runs with preinst, postinst and on failure
+                     * with postfailure; update-post.sh only acts on postinst */
                     filename = \"update-post.sh\";
                     type = \"shellscript\";
-                    properties: { install-if-different = [\"false\"]; }
+                    sha256 = \"\$swupdate_get_sha256(update-post.sh)\";
                 }
             );
 
@@ -615,15 +644,18 @@ software:
                     device = \"${DEVICE_B}\";
                     compressed = \"zlib\";
                     installed-directly = true;
-                    sha256 = \"\";              /* TODO: insert SHA256 hash here */
+                    /* filled in by the swupdate class at build time */
+                    sha256 = \"\$swupdate_get_sha256(${IMAGE_FILE})\";
                 }
             );
 
             scripts: (
                 {
+                    /* shellscript runs with preinst, postinst and on failure
+                     * with postfailure; update-post.sh only acts on postinst */
                     filename = \"update-post.sh\";
                     type = \"shellscript\";
-                    properties: { install-if-different = [\"false\"]; }
+                    sha256 = \"\$swupdate_get_sha256(update-post.sh)\";
                 }
             );
 
@@ -648,13 +680,6 @@ done
 # ---------------------------------------------------------------------------
 step "Generating recipes-images/images/update-image.bb"
 
-IMG_NAME_BLOCKS=""
-for i in "${!MACHINES[@]}"; do
-    m="${MACHINES[$i]}"
-    IMG_NAME_BLOCKS="${IMG_NAME_BLOCKS}
-SWUPDATE_IMAGES_FSTYPES:${m} = \"${IMAGE_FSTYPE}.gz\""
-done
-
 if [ "$ENABLE_SIGNING" = "yes" ]; then
     SIGNING_BLOCK="# RSA signing enabled -- .swu is signed with the private key at build time
 SWUPDATE_SIGNING = \"RSA\"
@@ -674,7 +699,7 @@ write_file "${RECIPES_IMAGES}/update-image.bb" \
 # Generated by init-layer.sh -- edit freely after generation.
 #
 # Build with:  bitbake update-image
-# Output:      <build-dir>/tmp/deploy/swu/update-image-<machine>.swu
+# Output:      <build-dir>/tmp/deploy/images/<machine>/update-image-<machine>.swu
 
 SUMMARY = \"OTA update package for ${PROJECT_NAME}\"
 DESCRIPTION = \"SWUpdate A/B dual-rootfs update package containing the root \
@@ -684,18 +709,19 @@ LIC_FILES_CHKSUM = \"file://\${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ec
 
 inherit swupdate
 
-# Base image whose rootfs is packaged into the .swu file
+# Base image whose rootfs is packaged into the .swu file. IMAGE_DEPENDS makes
+# bitbake build it first; without it a stale or missing image gets packed.
+IMAGE_DEPENDS = \"${BASE_IMAGE}\"
 SWUPDATE_IMAGES = \"${BASE_IMAGE}\"
 
-# Filesystem type (must match IMAGE_FSTYPES in your image recipe)
-${IMG_NAME_BLOCKS}
+# Filesystem type, as a varflag keyed by image name (must match IMAGE_FSTYPES)
+SWUPDATE_IMAGES_FSTYPES[${BASE_IMAGE}] = \".${IMAGE_FSTYPE}.gz\"
 
+# sw-description is picked from update-image/<MACHINE>/ (FILESOVERRIDES)
 SRC_URI = \" \\
     file://sw-description \\
     file://update-post.sh \\
 \"
-
-DEPENDS += \"swupdate-native\"
 
 ${SIGNING_BLOCK}
 "
@@ -735,9 +761,15 @@ printf "       See README.md -- Section: U-Boot Configuration\n\n"
 printf "  5. Build the update package:\n"
 printf "       bitbake update-image\n\n"
 printf "  6. Deploy the .swu file from:\n"
-printf "       <build>/tmp/deploy/swu/update-image-<machine>.swu\n\n"
+printf "       <build>/tmp/deploy/images/<machine>/update-image-<machine>.swu\n\n"
 printf "  Full guide: ${CYAN}README.md${RESET}\n\n"
 
 if [ "$ENABLE_SIGNING" = "yes" ]; then
     printf "  ${YELLOW}SECURITY REMINDER:${RESET} Never commit keys/swupdate_priv.pem to a public repo!\n\n"
+fi
+
+if [ "$SKIPPED_FILES" -gt 0 ]; then
+    printf "  ${YELLOW}NOTE:${RESET} %s existing file(s) were kept unchanged. If you changed\n" "$SKIPPED_FILES"
+    printf "  layer.config since the last run, re-run with --force so all generated files\n"
+    printf "  match it (keys in keys/ are never overwritten).\n\n"
 fi

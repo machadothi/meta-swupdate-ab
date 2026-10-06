@@ -15,20 +15,29 @@ inherit systemd
 SYSTEMD_SERVICE:${PN} = "check-update-ota.service"
 SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
-# u-boot-tools provides fw_printenv and fw_setenv
-RDEPENDS:${PN} = "u-boot-tools"
+# libubootenv-bin provides fw_printenv and fw_setenv
+# (u-boot-tools only ships mkimage and friends)
+RDEPENDS:${PN} = "libubootenv-bin"
+
+# Releases before styhead unpack into WORKDIR and have no UNPACKDIR
+UNPACKDIR ??= "${WORKDIR}"
 
 do_install() {
     # Install the systemd service unit
     install -d ${D}${systemd_system_unitdir}
-    install -m 0644 ${WORKDIR}/check-update-ota.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${UNPACKDIR}/check-update-ota.service ${D}${systemd_system_unitdir}/
 
     # Install the rollback guard script
     install -d ${D}${bindir}
-    install -m 0755 ${WORKDIR}/checkUpdateOTA.sh ${D}${bindir}/
+    install -m 0755 ${UNPACKDIR}/checkUpdateOTA.sh ${D}${bindir}/
+
+    # Health-check hooks: every executable here must succeed before an update
+    # is committed (see checkUpdateOTA.sh)
+    install -d ${D}${sysconfdir}/ota-health.d
 }
 
 FILES:${PN} = " \
     ${systemd_system_unitdir}/check-update-ota.service \
     ${bindir}/checkUpdateOTA.sh \
+    ${sysconfdir}/ota-health.d \
 "

@@ -17,7 +17,8 @@
 #   5. Unmounts and syncs to ensure all writes are flushed to storage.
 #
 # ARGUMENTS
-#   $1 = "postinst"  (always, set by SWUpdate)
+#   $1 = "preinst", "postinst" or "postfailure" (set by SWUpdate); only
+#        "postinst" does any work
 #
 # CUSTOMIZATION
 #   Add extra copy commands under the "Copy preserved files" section to
@@ -31,7 +32,19 @@ set -e
 
 MOUNT_POINT="/mnt/rootfs"
 
+# Unmount on any error so a failed update doesn't leave the new rootfs mounted
+cleanup() {
+    if grep -qs " $MOUNT_POINT " /proc/mounts; then
+        umount "$MOUNT_POINT" || true
+    fi
+}
+trap cleanup EXIT
+
 case "$1" in
+    preinst|postfailure)
+        # SWUpdate calls "shellscript" scripts before installing (preinst) and
+        # on failure (postfailure) too. Nothing to do at those stages.
+        ;;
     postinst)
         echo "[update-post] Starting post-install hook"
 
@@ -71,7 +84,7 @@ case "$1" in
         # Network configuration (NetworkManager)
         NM_SRC="/etc/NetworkManager/system-connections"
         NM_DST="${MOUNT_POINT}/etc/NetworkManager/system-connections"
-        if [ -d "$NM_SRC" ] && [ -n "$(ls -A $NM_SRC 2>/dev/null)" ]; then
+        if [ -d "$NM_SRC" ] && [ -n "$(ls -A "$NM_SRC" 2>/dev/null)" ]; then
             echo "[update-post] Copying NetworkManager connections..."
             mkdir -p "$NM_DST"
             cp -r "${NM_SRC}/." "$NM_DST/"
@@ -86,9 +99,15 @@ case "$1" in
 
         # --- Filesystem integrity check ---
         echo "[update-post] Running filesystem check on $TARGET_DEV..."
-        e2fsck -a -f "$TARGET_DEV" || true
-        # Note: e2fsck returns non-zero even when it fixes errors, hence '|| true'
-        echo "[update-post] Filesystem check complete"
+        # e2fsck exit codes: 1/2 = errors corrected, >= 4 = errors left uncorrected
+        # (or a usage/operational error). Only the latter must abort the update.
+        FSCK_RC=0
+        e2fsck -p -f "$TARGET_DEV" || FSCK_RC=$?
+        if [ "$FSCK_RC" -ge 4 ]; then
+            echo "[update-post] ERROR: e2fsck failed on $TARGET_DEV (exit code $FSCK_RC)"
+            exit 1
+        fi
+        echo "[update-post] Filesystem check complete (e2fsck exit code $FSCK_RC)"
 
         # --- Expand filesystem to fill the partition ---
         echo "[update-post] Resizing filesystem..."

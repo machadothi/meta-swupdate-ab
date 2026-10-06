@@ -192,7 +192,7 @@ nano layer.config     # Fill in YOUR project values (see Section 6)
 bitbake update-image
 ```
 
-That's it. Your `.swu` file is in `<build>/tmp/deploy/swu/`.
+That's it. Your `.swu` file is in `<build>/tmp/deploy/images/<machine>/`.
 
 ---
 
@@ -280,6 +280,12 @@ EMMC_DEVICE="/dev/mmcblk2"
 
 See [Section 12: RSA Signing](#12-rsa-signing) for details.
 
+### Section 7: Web Server
+
+| Variable | Type | Example | Description |
+|----------|------|---------|-------------|
+| `ENABLE_WEBSERVER` | yes/no | `"no"` | Build SWUpdate's web server (port 8080) for push updates. It has **no authentication**: only enable it with signing on or on a trusted network. Defaults to `no` if unset. |
+
 ---
 
 ## 7. Adding to Your Yocto Build
@@ -306,18 +312,18 @@ Add to your image recipe or `local.conf`:
 
 ```bitbake
 # In your image .bb file:
-IMAGE_INSTALL:append = " swupdate swupdate-www check-update-ota u-boot-tools"
+IMAGE_INSTALL:append = " swupdate check-update-ota libubootenv-bin"
 
 # Or in local.conf for development:
-CORE_IMAGE_EXTRA_INSTALL += "swupdate swupdate-www check-update-ota u-boot-tools"
+CORE_IMAGE_EXTRA_INSTALL += "swupdate check-update-ota libubootenv-bin"
 ```
 
 | Package | Purpose |
 |---------|---------|
 | `swupdate` | The update daemon |
-| `swupdate-www` | Web interface files (needed for web push updates) |
+| `swupdate-www` | Optional: web interface files, only with `ENABLE_WEBSERVER="yes"` |
 | `check-update-ota` | Rollback guard service (from this layer) |
-| `u-boot-tools` | Provides `fw_printenv`/`fw_setenv` |
+| `libubootenv-bin` | Provides `fw_printenv`/`fw_setenv` (`u-boot-tools` does not) |
 
 ### Step 3: Configure IMAGE_FSTYPES
 
@@ -389,7 +395,7 @@ if test "${upgrade_available}" = "1"; then
 fi
 
 # Rollback check
-if test ${bootcount} > ${bootlimit}; then
+if test ${bootcount} -gt ${bootlimit}; then
     echo "Boot failed ${bootcount} times — rolling back!"
     if test "${rootfspart}" = "2"; then
         setenv rootfspart 3
@@ -407,6 +413,14 @@ fi
 setenv bootargs "root=${mmcroot} console=ttymxc0,115200"
 # ... rest of your boot command
 ```
+
+> **Prefer U-Boot's built-in boot counting** if your BSP supports it:
+> `CONFIG_BOOTCOUNT_LIMIT` increments `bootcount` while `upgrade_available=1`
+> and runs `altbootcmd` (where you switch slots) once `bootlimit` is exceeded.
+
+> **Rollback needs a reboot.** A kernel panic or a hung boot only leads to a
+> rollback if the device actually reboots. Add `panic=5` to `bootargs` and
+> enable a hardware watchdog (U-Boot `CONFIG_WDT`, systemd `RuntimeWatchdogSec=`).
 
 > **BSP-specific:** The exact U-Boot configuration depends on your board's BSP.
 > Consult your board's documentation or ask your BSP vendor. The above is a
@@ -456,28 +470,13 @@ The `.swu` file is a CPIO archive (like a zip file) containing:
 - `<BASE_IMAGE>-<MACHINE>.ext4.gz` — the compressed rootfs image
 - `update-post.sh` — the post-install script
 
-Location: `<build-dir>/tmp/deploy/swu/update-image-<machine>.swu`
+Location: `<build-dir>/tmp/deploy/images/<machine>/update-image-<machine>.swu`
 
-### Filling in SHA256 Hashes
+### SHA256 Hashes
 
-The generated `sw-description` has empty `sha256` fields. Fill them in with
-the actual hash of your image file:
-
-```bash
-# Find the image file:
-ls tmp/deploy/images/<machine>/*.ext4.gz
-
-# Get its SHA256:
-sha256sum tmp/deploy/images/<machine>/<BASE_IMAGE>-<machine>.ext4.gz
-```
-
-Then edit `recipes-images/images/update-image/<machine>/sw-description` and
-replace the empty `sha256 = "";` with `sha256 = "abc123...";`.
-
-> **Note:** When `bitbake update-image` runs, it can compute sha256 automatically
-> if you use the `swupdate` class properly. The empty field is a starting point.
-> See the [SWUpdate docs](https://sbabic.github.io/swupdate/swupdate-image.html)
-> for automatic hash computation.
+The generated `sw-description` uses `$swupdate_get_sha256(<file>)`, so the
+`swupdate` class fills in the hash of every artifact at build time. There is
+nothing to edit by hand.
 
 ---
 
@@ -496,8 +495,9 @@ The device will install the update and automatically reboot.
 
 ### Method 2: Web Interface (push from browser or curl)
 
-SWUpdate includes a built-in web server (port 8080). Make sure your device is
-on the network, then:
+Requires `ENABLE_WEBSERVER="yes"` in `layer.config` (off by default: the web
+server has no authentication). SWUpdate then serves port 8080. Make sure your
+device is on the network, then:
 
 ```bash
 # From your computer:
@@ -507,7 +507,7 @@ curl -F "image=@update-image-mymachine-v1.swu" http://<device-ip>:8080/upload
 http://<device-ip>:8080
 ```
 
-> The web interface may require `swupdate-www` to be installed on the device.
+> The browser interface also needs `swupdate-www` installed on the device.
 
 ### Method 3: SCP then run locally
 
@@ -524,12 +524,12 @@ ssh root@<device-ip> 'ota-update /tmp/update-image-mymachine-v1.swu'
 1. `ota-update` detects which partition is active and selects the correct slot
 2. SWUpdate verifies hardware compatibility (checks `/etc/hwrevision`)
 3. SWUpdate verifies signature (if signing is enabled)
-4. `update-pre.sh` creates `/dev/update` symlink to target partition
-5. The rootfs image is streamed and written to the inactive partition
-6. `update-post.sh` copies network config, runs `e2fsck`, resizes filesystem
-7. U-Boot env is updated: `rootfspart`, `mmcroot`, `upgrade_available=1`
-8. System reboots into the new partition
-9. `checkUpdateOTA.sh` runs, clears `upgrade_available` — update committed
+4. The rootfs image is streamed and written to the inactive partition
+5. `update-post.sh` copies network config, runs `e2fsck`, resizes filesystem
+6. U-Boot env is updated: `rootfspart`, `mmcroot`, `upgrade_available=1`
+7. System reboots into the new partition
+8. `checkUpdateOTA.sh` runs the health checks in `/etc/ota-health.d/` and, if
+   they pass, clears `upgrade_available` — update committed
 
 ---
 
@@ -546,15 +546,17 @@ U-Boot switches back to the previous partition automatically.
 
 **Layer 2 — checkUpdateOTA.sh:**
 This script runs at every boot (via systemd `check-update-ota.service`).
-If `upgrade_available=1` (meaning a new update just booted), it clears the
-flag, "committing" the update and closing the rollback window.
+If `upgrade_available=1` (meaning a new update just booted), it runs the health
+checks in `/etc/ota-health.d/`. If all pass, it clears the flag, "committing"
+the update and closing the rollback window. If one fails, or the U-Boot
+environment can't be read or written, the unit fails and nothing is committed.
 
 ### Rollback Scenarios
 
 | Scenario | What Happens |
 |----------|-------------|
 | New image fails to boot (kernel panic) | U-Boot increments bootcount; reverts after bootlimit attempts |
-| New image boots but key service fails to start | If `checkUpdateOTA.sh` doesn't run, upgrade_available stays set; U-Boot eventually reverts |
+| New image boots but key service fails to start | A health check in `/etc/ota-health.d/` fails, nothing is committed; U-Boot reverts after `bootlimit` more boots |
 | New image boots fine | `checkUpdateOTA.sh` clears upgrade_available; update committed |
 | Network failure during image write | SWUpdate aborts; inactive partition may be partially written but active partition is untouched |
 
@@ -612,11 +614,16 @@ ENABLE_SIGNING="yes"
 GENERATE_KEYS="yes"   # or "no" if you provide your own keys
 ```
 
-Re-run `init-layer.sh` to apply:
+Re-run `init-layer.sh` with `--force` to apply. This regenerates the recipes and
+`swupdate.cfg`; existing keys in `keys/` are never overwritten:
 
 ```bash
-./init-layer.sh layer.config
+./init-layer.sh layer.config --force
 ```
+
+This also compiles signature verification into SWUpdate
+(`CONFIG_SIGNED_IMAGES=y`). Without it, SWUpdate accepts unsigned packages
+whatever `swupdate.cfg` says.
 
 ### Key Management for Production
 
@@ -675,8 +682,8 @@ in `layer.config` and re-run `init-layer.sh`, then rebuild.
 ### SWUpdate says "Signature verification failed"
 
 Either:
-1. The update wasn't signed but the device expects a signature → set
-   `ENABLE_SIGNING="no"` and rebuild, or re-enable signing in `swupdate.cfg`
+1. The update wasn't signed but the device expects a signature → build the
+   update with the same `ENABLE_SIGNING` setting as the device image
 2. The keys don't match → rebuild with the correct key pair
 
 ### fw_printenv: "Warning: Bad CRC" or environment not found
@@ -724,19 +731,6 @@ tail -f /var/log/messages | grep swupdate
 
 ## 14. Advanced: Customizing Update Scripts
 
-### update-pre.sh — Pre-install hook
-
-Located at: `recipes-support/swupdate/swupdate/update-pre.sh`
-
-This runs before the new image is written. The default creates a `/dev/update`
-symlink to the target partition.
-
-**To add custom pre-install actions**, edit this file after running `init-layer.sh`.
-Common additions:
-- Stop running services that lock files on the filesystem
-- Log the start of the update to an external system
-- Check available storage space
-
 ### update-post.sh — Post-install hook
 
 Located at: `recipes-images/images/update-image/update-post.sh`
@@ -759,19 +753,19 @@ fi
 
 Located at: `recipes-core/check-update-ota/files/checkUpdateOTA.sh`
 
-**To add custom validation before committing an update**, add checks before
-the `fw_setenv` calls. If your check fails and you don't clear `upgrade_available`,
-U-Boot will eventually roll back:
+**To add custom validation before committing an update**, drop an executable
+into `/etc/ota-health.d/` (for example from your image recipe). Every check
+there must exit 0, or the update is not committed and U-Boot rolls back after
+`bootlimit` boots:
 
 ```bash
-# Example: Only commit if a specific service started successfully
-if ! systemctl is-active --quiet my-critical-service; then
-    echo "[checkUpdateOTA] Critical service failed — not committing update"
-    # Do NOT call fw_setenv upgrade_available 0
-    # U-Boot will roll back after bootlimit attempts
-    exit 1
-fi
+#!/bin/sh
+# /etc/ota-health.d/10-my-service
+systemctl is-active --quiet my-critical-service
 ```
+
+Also order `check-update-ota.service` after the services your checks look at
+(`After=` in the unit), so they have started by the time the checks run.
 
 ---
 
@@ -797,6 +791,8 @@ IDENTIFY_VALUES=("device-v1" "device-v2" "device-v3")
 
 > `--force` overwrites all generated files. If you have manual edits in the
 > generated files, back them up first or apply them again after re-running.
+> Keys in `keys/` are never overwritten, so devices in the field keep accepting
+> your updates.
 
 ---
 
@@ -808,7 +804,7 @@ IDENTIFY_VALUES=("device-v1" "device-v2" "device-v3")
 |------|-------------|
 | `layer.config` | Always — your project configuration |
 | `static/defconfig` | To change SWUpdate build features |
-| Generated `sw-description` | To add sha256 hashes or extra artifacts |
+| Generated `sw-description` | To add extra artifacts |
 | Generated `swupdate.cfg` | To tune runtime settings per machine |
 | Generated update scripts | To add custom pre/post-install logic |
 
@@ -831,11 +827,10 @@ Re-run `init-layer.sh --force` to regenerate if you change `layer.config`.
 | File | Installed at (on device) | Description |
 |------|--------------------------|-------------|
 | `defconfig` | (build-time only) | SWUpdate kconfig options |
-| `update-pre.sh` | `/usr/lib/swupdate/conf.d/update-pre.sh` | Pre-install hook |
 | `update-post.sh` | (runs inside .swu package) | Post-install hook |
 | `ota-update.sh` | `/usr/bin/ota-update` | CLI update helper |
-| `checkUpdateOTA.sh` | `/usr/bin/checkUpdateOTA.sh` | Rollback guard script |
-| `check-update-ota.service` | `/etc/systemd/system/check-update-ota.service` | Systemd unit |
+| `checkUpdateOTA.sh` | `/usr/bin/checkUpdateOTA.sh` | Rollback guard script (runs `/etc/ota-health.d/*`) |
+| `check-update-ota.service` | `${systemd_system_unitdir}/check-update-ota.service` | Systemd unit |
 | `check-update-ota.bb` | (build-time only) | Bitbake recipe |
 
 ---
