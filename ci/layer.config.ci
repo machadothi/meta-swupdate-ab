@@ -1,0 +1,32 @@
+# =============================================================================
+# layer.config used by CI (.github/workflows/ci.yml) to generate the layer
+# for the qemuarm64 Yocto build in ci/kas.yml.
+# Signing and the web server are on so the build covers those code paths.
+# =============================================================================
+
+PROJECT_NAME="ci"
+LAYER_PRIORITY="9"
+YOCTO_RELEASES="scarthgap"
+
+MACHINES=("qemuarm64")
+HW_IDS=("qemuarm64")
+HW_VERSION="1.0"
+HW_COMPAT_VERSIONS="1.0"
+
+# virtio disk in QEMU: /dev/vda2, /dev/vda3
+EMMC_DEVICE="/dev/vda"
+ROOTFS_A_PART="2"
+ROOTFS_B_PART="3"
+
+BASE_IMAGE="core-image-minimal"
+IMAGE_FSTYPE="ext4"
+SW_VERSION="0.0.0-ci"
+
+IDENTIFY_NAME="product"
+IDENTIFY_VALUES=("ci")
+
+# Throwaway keys, generated fresh on every CI run
+ENABLE_SIGNING="yes"
+GENERATE_KEYS="yes"
+
+ENABLE_WEBSERVER="yes"

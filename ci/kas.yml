@@ -1,0 +1,53 @@
+# =============================================================================
+# kas configuration for the CI Yocto build (see .github/workflows/ci.yml)
+# =============================================================================
+#
+# Builds update-image for qemuarm64 on scarthgap from the layer that
+# init-layer.sh generated with ci/layer.config.ci. Run it from outside the
+# checkout (KAS_WORK_DIR elsewhere): the layer's BBFILE_PATTERN matches every
+# path under the repository, so other layers must not be cloned into it.
+#
+#   cp ci/layer.config.ci layer.config && ./init-layer.sh layer.config
+#   KAS_WORK_DIR=/path/outside/repo kas build ci/kas.yml
+#
+# Branches float on purpose, so upstream breakage shows up in the weekly build.
+# =============================================================================
+
+header:
+  version: 14
+
+machine: qemuarm64
+distro: poky
+target: update-image
+
+repos:
+  # This repository (no url): the generated layer at its root
+  meta-swupdate-ab:
+
+  poky:
+    url: https://git.yoctoproject.org/poky
+    branch: scarthgap
+    layers:
+      meta:
+      meta-poky:
+
+  meta-openembedded:
+    url: https://github.com/openembedded/meta-openembedded.git
+    branch: scarthgap
+    layers:
+      meta-oe:
+
+  meta-swupdate:
+    url: https://github.com/sbabic/meta-swupdate.git
+    branch: scarthgap
+
+local_conf_header:
+  swupdate-ab: |
+    INIT_MANAGER = "systemd"
+    IMAGE_FSTYPES:append = " ext4.gz"
+    IMAGE_INSTALL:append = " swupdate swupdate-www check-update-ota libubootenv-bin"
+  ci: |
+    # Keep disk usage within a GitHub-hosted runner
+    INHERIT += "rm_work"
+    BB_NUMBER_THREADS = "4"
+    PARALLEL_MAKE = "-j 4"

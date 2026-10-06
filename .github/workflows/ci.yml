@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly full Yocto build (Monday 03:00 UTC); branches in ci/kas.yml float
+    - cron: "0 3 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: command -v shellcheck || (sudo apt-get update && sudo apt-get install -y shellcheck)
+      - name: shellcheck
+        run: shellcheck -S warning init-layer.sh static/*.sh tests/*.sh ci/*.sh
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck and busybox
+        run: sudo apt-get update && sudo apt-get install -y shellcheck busybox
+      - name: Run tests
+        run: tests/run-tests.sh
+
+  # Cheap check on every push: the generated layer parses and every recipe
+  # finds its files (SRC_URI / FILESOVERRIDES), without compiling anything
+  yocto-parse:
+    needs: [lint, tests]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work directory outside the checkout
+        # BBFILE_PATTERN matches everything under the layer, so the other
+        # layers must not be cloned into the checkout
+        run: echo "KAS_WORK_DIR=$RUNNER_TEMP/kas" >> "$GITHUB_ENV"
+      - name: Set up host
+        run: ci/setup-host.sh
+      - name: Generate the layer
+        run: cp ci/layer.config.ci layer.config && ./init-layer.sh layer.config
+      - name: Parse and unpack
+        run: |
+          mkdir -p "$KAS_WORK_DIR"
+          kas shell ci/kas.yml -c \
+            "bitbake -p && bitbake -c unpack swupdate check-update-ota update-image"
+
+  # Full build: weekly and on demand (several hours on a hosted runner)
+  yocto-build:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [yocto-parse]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work and cache directories outside the checkout
+        run: |
+          echo "KAS_WORK_DIR=$RUNNER_TEMP/kas" >> "$GITHUB_ENV"
+          echo "DL_DIR=$RUNNER_TEMP/cache/downloads" >> "$GITHUB_ENV"
+          echo "SSTATE_DIR=$RUNNER_TEMP/cache/sstate" >> "$GITHUB_ENV"
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Set up host
+        run: ci/setup-host.sh
+      - name: Restore download and sstate cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/cache/downloads
+            ${{ runner.temp }}/cache/sstate
+          key: yocto-scarthgap-qemuarm64-${{ github.run_id }}
+          restore-keys: yocto-scarthgap-qemuarm64-
+      - name: Generate the layer
+        run: cp ci/layer.config.ci layer.config && ./init-layer.sh layer.config
+      - name: Build update-image
+        run: |
+          mkdir -p "$KAS_WORK_DIR" "$DL_DIR" "$SSTATE_DIR"
+          kas build ci/kas.yml
+      - name: Check build output
+        run: ci/check-build.sh "$KAS_WORK_DIR/build/tmp/deploy/images/qemuarm64"
+      - name: Upload .swu and manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-image-qemuarm64
+          path: |
+            ${{ runner.temp }}/kas/build/tmp/deploy/images/qemuarm64/update-image-*.swu
+            ${{ runner.temp }}/kas/build/tmp/deploy/images/qemuarm64/core-image-minimal-*.manifest
+          if-no-files-found: ignore
+      - name: Disk usage
+        if: always()
+        run: df -h /
+      # Saved even when the build fails or times out, so the next run resumes
+      # from the sstate built so far instead of starting from scratch
+      - name: Save download and sstate cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/cache/downloads
+            ${{ runner.temp }}/cache/sstate
+          key: yocto-scarthgap-qemuarm64-${{ github.run_id }}

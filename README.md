@@ -468,11 +468,13 @@ bitbake update-image
 ### Output
 
 The `.swu` file is a CPIO archive (like a zip file) containing:
-- `sw-description` — the update manifest
-- `<BASE_IMAGE>-<MACHINE>.ext4.gz` — the compressed rootfs image
+- `sw-description` — the update manifest (plus `sw-description.sig` when signing is on)
+- `<BASE_IMAGE>-<MACHINE>.rootfs.ext4.gz` — the compressed rootfs image
+  (no `.rootfs` on kirkstone; `update-image.bb` picks the right name per release)
 - `update-post.sh` — the post-install script
 
-Location: `<build-dir>/tmp/deploy/images/<machine>/update-image-<machine>.swu`
+Location: `<build-dir>/tmp/deploy/images/<machine>/update-image-<machine>.rootfs.swu`
+(`update-image-<machine>.swu` on kirkstone)
 
 ### SHA256 Hashes
 
@@ -864,8 +866,26 @@ SWUpdate is licensed under GPL-2.0. See [sbabic/swupdate](https://github.com/sba
 
 ## Contributing
 
-Issues and pull requests welcome. Please test against at least one real Yocto build
-before submitting.
+Issues and pull requests welcome.
+
+Before submitting, run the tests (bash, openssl and coreutils; no Yocto needed):
+
+```bash
+tests/run-tests.sh
+shellcheck -S warning init-layer.sh static/*.sh tests/*.sh ci/*.sh
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these on every push,
+plus a Yocto parse check of a layer generated from
+[ci/layer.config.ci](ci/layer.config.ci). A full `bitbake update-image` build for
+qemuarm64 on scarthgap ([ci/kas.yml](ci/kas.yml)) runs weekly and can be started
+by hand from the Actions tab (*Run workflow*). To run it locally with
+[kas](https://kas.readthedocs.io/):
+
+```bash
+cp ci/layer.config.ci layer.config && ./init-layer.sh layer.config
+KAS_WORK_DIR=/path/outside/this/repo kas build ci/kas.yml
+```
 
 ---
 
